@@ -12,13 +12,31 @@ class ClientTask:
         self.__db_manager = db_manager
     
     def __call__(self):
+        print("Connected from", self.__client_host, self.__client_port)
         request = Packet.recv(self.__sock)
-        print(request)
+        command = request["commad"]
+        data = request["data"]
+        if command == "login_request":
+            username = data["username"]
+            password = data["password"]
+            db_result = self.__db_manager.login(username, password)
+            response = Packet()
+            response["command"] = "login_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "session_id" : db_result
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
 
 class GameServer(Thread):
     DEFAULT_HOST = "127.0.0.1"
-    DEFAULT_PORT = "12345"
+    DEFAULT_PORT = 12346
     def __init__(self, db_manager, host = None, port = None):
+        super().__init__()
         self.__server_host = host if host else GameServer.DEFAULT_HOST
         self.__server_port = port if port else GameServer.DEFAULT_PORT
         self.__db_manager = db_manager
@@ -26,35 +44,10 @@ class GameServer(Thread):
         self.__executor = None
 
     def run(self):
-        try:
-            self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.__sock.bind((self.__server_host, self.__server_port))
-            self.__sock.listen()
-        except Exception as err:
-            print("Can not start server due to following error:\n\t", err)
-            return
+        self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.__sock.bind((self.__server_host, self.__server_port))
+        self.__sock.listen()
         self.__executor = ThreadPoolExecutor()
         while True:
             ct = ClientTask(self.__db_manager, *self.__sock.accept())
             self.__executor.submit(ct)
-
-if __name__ == "__main__":
-    import sys
-    options = sys.argv
-    if "host" not in options or "port" not in options:
-        print("Please provide host and port in format \"host = x.x.x.x and port = y\".")
-        exit()
-    else:
-        try:
-            host = options[options.index("host") + 2]
-            port = int(options[options.index("port") + 2])
-            db_manager = DatabaseManager()
-            server = GameServer(db_manager, host, port)
-            server.start()
-            server.join()
-        except IndexError:
-            print("Host or port is missing. Please provide host and port in format \"host = x.x.x.x and port = y\".")
-        except Exception as e:
-            print(e)
-        finally:
-            exit()
