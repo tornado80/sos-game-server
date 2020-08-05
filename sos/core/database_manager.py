@@ -104,7 +104,7 @@ class DatabaseManager:
 
     def open_connection(self):
         try:
-            self.db_connection = sqlite3.connect(self.db_path)
+            self.db_connection = sqlite3.connect(self.db_path, check_same_thread=False)
             self.db_cursor = self.db_connection.cursor()
             return True
         except sqlite3.Error as err:
