@@ -206,19 +206,19 @@ class DatabaseManager:
         return True
 
     @db_transaction
-    def add_account(self, username : str, password : str, first_name : str, last_name : str) -> bool:
+    def add_account(self, username : str, password : str, first_name : str, last_name : str, is_admin = False) -> bool:
         if self.does_username_exist(username) != -1:
             raise ExistingUsernameError("This username exists already.")
         dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.db_cursor.execute(
-            "INSERT INTO Accounts (username, password, first_name, last_name, when_joined) VALUES (?, ?, ?, ?, ?);", 
-            (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, dt_str)
+            "INSERT INTO Accounts (username, password, first_name, last_name, when_joined, is_admin) VALUES (?, ?, ?, ?, ?, ?);", 
+            (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, dt_str, 1 if is_admin else 0)
         )
         self.db_connection.commit()
         return True
 
     @db_transaction
-    def edit_account(self, session_token : str, username : str, password : str, first_name : str, last_name : str) -> bool:
+    def edit_account(self, session_token : str, username : str, password : str, first_name : str, last_name : str, is_admin = False) -> bool:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:   
             raise InvalidSessionTokenError("Session token is not valid.")
@@ -226,8 +226,8 @@ class DatabaseManager:
         if suspected_account_id != -1 and suspected_account_id != account_id:
             raise ExistingUsernameError("This username exists already.")
         self.db_cursor.execute(
-            "UPDATE Accounts SET username = ?, password = ?, first_name = ?, last_name = ? WHERE account_id = ?;",
-            (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, account_id)
+            "UPDATE Accounts SET username = ?, password = ?, first_name = ?, last_name = ?, is_admin = ? WHERE account_id = ?;",
+            (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, 1 if is_admin else 0, account_id)
         )
         self.db_connection.commit()
         return True

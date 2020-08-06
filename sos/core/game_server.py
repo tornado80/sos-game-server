@@ -14,7 +14,7 @@ class ClientTask:
     def __call__(self):
         print("Connected from", self.__client_host, self.__client_port)
         request = Packet.recv(self.__sock)
-        command = request["commad"]
+        command = request["command"]
         data = request["data"]
         if command == "login_request":
             username = data["username"]
@@ -39,6 +39,20 @@ class ClientTask:
             db_result = self.__db_manager.add_account(username, password, first_name, last_name)
             response = Packet()
             response["command"] = "signup_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "ok" : "done"
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
+        elif command == "signout_request":
+            session_token = data["session_id"]
+            db_result = self.__db_manager.logout(session_token)
+            response = Packet()
+            response["command"] = "signout_response"
             if not isinstance(db_result, Exception):
                 response["data"] = {
                     "ok" : "done"
