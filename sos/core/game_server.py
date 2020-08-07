@@ -62,7 +62,54 @@ class ClientTask:
                     "error" : str(db_result)
                 }
             response.send(self.__sock)
-
+        elif command == "get_account_request":
+            session_token = data["session_id"]
+            db_result = self.__db_manager.get_account(session_token)
+            response = Packet()
+            response["command"] = "get_account_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = db_result
+                response["data"]["ok"] = "done"
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
+        elif command == "edit_account_request":
+            session_token = data["session_id"]
+            current_password = data["current_password"]
+            username = data["username"]
+            password = data["password"]
+            first_name = data["first_name"]
+            last_name = data["last_name"]
+            db_result = self.__db_manager.edit_account(session_token, current_password, username, password, first_name, last_name)
+            response = Packet()
+            response["command"] = "edit_account_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "ok" : "done"
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
+        elif command == "remove_account_request":
+            session_token = data["session_id"]
+            current_password = data["current_password"]
+            db_result = self.__db_manager.remove_account(session_token, current_password)
+            response = Packet()
+            response["command"] = "remove_account_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "ok" : "done"
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
+            
 class GameServer(Thread):
     DEFAULT_HOST = "127.0.0.1"
     DEFAULT_PORT = 12345

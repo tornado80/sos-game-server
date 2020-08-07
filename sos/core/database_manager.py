@@ -155,6 +155,37 @@ class DatabaseManager:
         else:
             return -1
 
+    def check_password(self, account_id : int, password : str) -> bool:
+        self.db_cursor.execute(
+            "SELECT password FROM Accounts WHERE (account_id = ?);",
+            (account_id,)
+        )
+        password_in_db = self.db_cursor.fetchone()
+        if hashlib.sha512(password.encode(encoding="utf-8")).hexdigest() == password_in_db:
+            return True
+        else:
+            return False
+
+    def get_account(self, session_token : str) -> dict:
+        account_id = self.validate_session_token(session_token)
+        if account_id == -1:   
+            raise InvalidSessionTokenError("Session token is not valid.")
+        self.db_cursor.execute(
+            "SELECT username, first_name, last_name, rating, number_of_wins, number_of_games, when_joined, last_login FROM Accounts WHERE (account_id = ?);",
+            (account_id,)
+        )
+        result = self.db_cursor.fetchone()
+        return {
+            "username" : result[0],
+            "firstname" : result[1],
+            "lastname" : result[2],
+            "rating" : result[3],
+            "wins" : result[4],
+            "games" : result[5],
+            "joined_at" : result[6],
+            "last_login" : result[7]
+        }
+
     @db_transaction
     def login(self, username : str, password : str) -> str: # returns session token on success
         account_id = self.does_username_exist(username)
@@ -218,10 +249,12 @@ class DatabaseManager:
         return True
 
     @db_transaction
-    def edit_account(self, session_token : str, username : str, password : str, first_name : str, last_name : str, is_admin = False) -> bool:
+    def edit_account(self, session_token : str, current_password : str, username : str, password : str, first_name : str, last_name : str, is_admin = False) -> bool:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:   
             raise InvalidSessionTokenError("Session token is not valid.")
+        if not self.check_password(account_id, current_password):
+            raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
         suspected_account_id = self.does_username_exist(username)
         if suspected_account_id != -1 and suspected_account_id != account_id:
             raise ExistingUsernameError("This username exists already.")
@@ -233,10 +266,12 @@ class DatabaseManager:
         return True
 
     @db_transaction
-    def remove_account(self, session_token : str) -> bool:
+    def remove_account(self, session_token : str, current_password : str) -> bool:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:
             raise InvalidSessionTokenError("Session token is not valid.")
+        if not self.check_password(account_id, current_password):
+            raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
         # we will not delete account, instead update it to deleted account.
         # since in case of deleting account we have to delete the corresponding  
         dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
