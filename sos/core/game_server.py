@@ -94,6 +94,55 @@ class ClientTask:
                     "error" : str(db_result)
                 }
             response.send(self.__sock)
+        elif command == "edit_profile_request":
+            session_token = data["session_id"]
+            current_password = data["current_password"]
+            first_name = data["first_name"]
+            last_name = data["last_name"]
+            db_result = self.__db_manager.edit_profile(session_token, current_password, first_name, last_name)
+            response = Packet()
+            response["command"] = "edit_profile_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "ok" : "done"
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
+        elif command == "edit_username_request":
+            session_token = data["session_id"]
+            current_password = data["current_password"]
+            username = data["username"]
+            db_result = self.__db_manager.change_username(session_token, current_password, username)
+            response = Packet()
+            response["command"] = "edit_username_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "ok" : "done"
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)
+        elif command == "edit_password_request":
+            session_token = data["session_id"]
+            current_password = data["current_password"]
+            new_password = data["new_password"]
+            db_result = self.__db_manager.change_password(session_token, current_password, new_password)
+            response = Packet()
+            response["command"] = "edit_password_response"
+            if not isinstance(db_result, Exception):
+                response["data"] = {
+                    "ok" : "done"
+                }
+            else:
+                response["data"] = {
+                    "error" : str(db_result)
+                }
+            response.send(self.__sock)            
         elif command == "remove_account_request":
             session_token = data["session_id"]
             current_password = data["current_password"]

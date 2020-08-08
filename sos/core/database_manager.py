@@ -161,7 +161,7 @@ class DatabaseManager:
             (account_id,)
         )
         password_in_db = self.db_cursor.fetchone()
-        if hashlib.sha512(password.encode(encoding="utf-8")).hexdigest() == password_in_db:
+        if hashlib.sha512(password.encode(encoding="utf-8")).hexdigest() == password_in_db[0]:
             return True
         else:
             return False
@@ -244,6 +244,51 @@ class DatabaseManager:
         self.db_cursor.execute(
             "INSERT INTO Accounts (username, password, first_name, last_name, when_joined, is_admin) VALUES (?, ?, ?, ?, ?, ?);", 
             (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, dt_str, 1 if is_admin else 0)
+        )
+        self.db_connection.commit()
+        return True
+
+    @db_transaction
+    def change_password(self, session_token : str, current_password : str, new_password : str) -> bool:
+        account_id = self.validate_session_token(session_token)
+        if account_id == -1:   
+            raise InvalidSessionTokenError("Session token is not valid.")
+        if not self.check_password(account_id, current_password):
+            raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
+        self.db_cursor.execute(
+            "UPDATE Accounts SET password = ? WHERE account_id = ?;",
+            (hashlib.sha512(new_password.encode(encoding="utf-8")).hexdigest(), account_id)
+        )
+        self.db_connection.commit()
+        return True
+
+    @db_transaction
+    def edit_profile(self, session_token : str, current_password : str, first_name : str, last_name : str) -> bool:
+        account_id = self.validate_session_token(session_token)
+        if account_id == -1:   
+            raise InvalidSessionTokenError("Session token is not valid.")
+        if not self.check_password(account_id, current_password):
+            raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
+        self.db_cursor.execute(
+            "UPDATE Accounts SET first_name = ?, last_name = ? WHERE account_id = ?;",
+            (first_name, last_name, account_id)
+        )
+        self.db_connection.commit()
+        return True
+
+    @db_transaction
+    def change_username(self, session_token : str, current_password : str, username : str):
+        account_id = self.validate_session_token(session_token)
+        if account_id == -1:   
+            raise InvalidSessionTokenError("Session token is not valid.")
+        if not self.check_password(account_id, current_password):
+            raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
+        suspected_account_id = self.does_username_exist(username)
+        if suspected_account_id != -1 and suspected_account_id != account_id:
+            raise ExistingUsernameError("This username exists already.")
+        self.db_cursor.execute(
+            "UPDATE Accounts SET username = ? WHERE account_id = ?;",
+            (username, account_id)
         )
         self.db_connection.commit()
         return True
