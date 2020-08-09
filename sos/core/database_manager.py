@@ -21,6 +21,7 @@ def db_transaction(function):
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
         try:
+            print("wrapper called")
             db_lock.acquire()
             return_value = function(*args, **kwargs)
         except Exception as error:
@@ -166,6 +167,7 @@ class DatabaseManager:
         else:
             return False
 
+    @db_transaction
     def get_account(self, session_token : str) -> dict:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:   
