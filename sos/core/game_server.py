@@ -1,15 +1,70 @@
-from threading import Thread
+from threading import Thread, Lock
 import socket
 from time import sleep
 from concurrent.futures import ThreadPoolExecutor
 from sos.utils.protocol import Packet
 from sos.core.database_manager import DatabaseManager
 
+class QueueNode:
+    def __init__(self, data):
+        self.next = None
+        self.data = data
+
+class Queue:
+    def __init__(self):
+        self.head = None
+        self.tail = None
+        self.lock = Lock()
+    
+    def is_empty(self):
+        if self.head is None and self.tail is None:
+            return True
+        return False
+
+    def enqueue(self, data):
+        self.lock.acquire()
+        node = QueueNode(data)
+        if self.is_empty():            
+            self.head = self.tail = node
+        else:
+            self.tail.next = node
+        self.lock.release()
+        return True
+
+    def dequeue(self):
+        self.lock.acquire()
+        if self.head is not None:
+            node = self.head
+            self.head = node.next
+            if self.head is None:
+                self.tail = None
+            self.lock.release()
+            return node.data
+        else:
+            self.lock.release()
+            return None        
+
+class GameRunner(Thread):
+    def __init__(self):
+        super().__init__()
+        self.__players_connections = {}
+        self._tasks_queue = Queue()
+
+    def run(self):
+        while True:
+            if not self._tasks_queue.is_empty():
+                task = self._tasks_queue.dequeue()
+                if task["command"] == "new_player_connection":
+                    pass
+            else:
+                sleep(0.01)
+
 class ClientTask:
     def __init__(self, db_manager, game_server, connection_sock, address):
         self.__sock = connection_sock
         self.__client_host = address[0]
         self.__client_port = address[1]
+        self.__client_address = address
         self.__game_server = game_server
         self.__db_manager = db_manager
     
@@ -18,6 +73,7 @@ class ClientTask:
         request = Packet.recv(self.__sock)
         command = request["command"]
         data = request["data"]
+        long_time_connection = False
         if self.__game_server.is_stopped():
             response = Packet()
             response["command"] = command.replace("request", "response")
@@ -175,7 +231,69 @@ class ClientTask:
                         "error" : str(db_result)
                     }
                 response.send(self.__sock)
-        self.__sock.close()
+            elif command == "new_game_request":
+                session_token = data["session_id"]
+                board_size = data["board_size"]
+                player_count = data["player_count"]
+                is_public = data["is_public"]
+                db_result = self.__db_manager.new_game(session_token, board_size, player_count, is_public)
+                response = Packet()
+                response["command"] = "new_game_response"
+                if not isinstance(db_result, Exception):
+                    game_id = db_result[0]
+                    account_id = db_result[1]
+                    username = db_result[2]
+                    response["data"] = {
+                        "game_id" : game_id,
+                        "creator_username" : username
+                    }
+                    response.send(self.__sock)
+                    """
+                    long_time_connection = True
+                    self.__game_server.add_to_runners(game_id)
+                    task = {
+                        "command" : "new_player_connection",
+                        "account_id" : account_id,
+                        "socket" : self.__sock,
+                        "client_address" : self.__client_address
+                    }
+                    self.__game_server._game_runners[game_id]._tasks_queue.enqueue(task)
+                    """
+                else:
+                    response["data"] = {
+                        "error" : str(db_result)
+                    }
+                    response.send(self.__sock)
+            elif command == "join_game_request":
+                session_token = data["session_id"]
+                game_id = data["game_id"]
+                creator_username = data["creator_username"]
+                db_result = self.__db_manager.join_game(session_token, game_id, creator_username)
+                response = Packet()
+                response["command"] = "join_game_response"
+                if not isinstance(db_result, Exception):
+                    account_id = db_result
+                    response["data"] = {
+                        "ok" : "done"
+                    }
+                    response.send(self.__sock)
+                    """
+                    long_time_connection = True
+                    task = {
+                        "command" : "new_player_connection",
+                        "account_id" : account_id,
+                        "socket" : self.__sock,
+                        "client_address" : self.__client_address
+                    }
+                    self.__game_server._game_runners[game_id]._tasks_queue.enqueue(task)
+                    """
+                else:
+                    response["data"] = {
+                        "error" : str(db_result)
+                    }
+                    response.send(self.__sock)                
+        if not long_time_connection:
+            self.__sock.close()
 
 class GameServer(Thread):
     DEFAULT_HOST = "127.0.0.1"
@@ -185,10 +303,19 @@ class GameServer(Thread):
         self.__server_host = host if host else GameServer.DEFAULT_HOST
         self.__server_port = port if port else GameServer.DEFAULT_PORT
         self.__db_manager = db_manager
+        self._game_runners = {}
+        self.__game_runners_lock = Lock()
         self.__sock = None
         self.__executor = None
         self.__is_paused = False
         self.__is_stopped = False
+
+    def add_to_runners(self, game_id):
+        self._game_runners_lock.acquire()
+        runner = GameRunner(self.__db_manager, game_id)
+        self._game_runners[game_id] = runner
+        runner.start()
+        self.__game_runners_lock.release()
 
     def run(self):
         self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -202,7 +329,7 @@ class GameServer(Thread):
             else:
                 if self.__is_stopped:
                     self.__sock.close()
-                    # shutdown game servers
+                    # shutdown game runners
                     # self.__executor.shutdown()
                     # break loop
                 else:

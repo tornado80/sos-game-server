@@ -15,13 +15,18 @@ class WrongUsernamePasswordError(Exception):
 class InvalidSessionTokenError(Exception):
     pass
 
+class GameNewPlayerBannedError(Exception):
+    pass
+
+class WrongGameIDError(Exception):
+    pass
+
 db_lock = Lock()
 
 def db_transaction(function):
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
         try:
-            print("wrapper called")
             db_lock.acquire()
             return_value = function(*args, **kwargs)
         except Exception as error:
@@ -46,6 +51,7 @@ class DatabaseManager:
         when_joined TEXT NOT NULL,
         when_deleted TEXT,
         last_login TEXT,
+        is_playing_game INTEGER NOT NULL DEFAULT 0 CHECK (is_playing_game == 1 OR is_playing_game == 0),
         is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin == 1 OR is_admin == 0),
         is_disabled INTEGER NOT NULL DEFAULT 0 CHECK (is_disabled == 1 OR is_disabled == 0)
     );
@@ -62,6 +68,7 @@ class DatabaseManager:
         player_count INTEGER NOT NULL CHECK (player_count > 0),
         board_size INTEGER NOT NULL CHECK (player_count > 0),
         is_public INTEGER NOT NULL CHECK (is_public == 1 OR is_public == 0),
+        is_running INTEGER NOT NULL DEFAULT 1 CHECK (is_running == 1 OR is_running == 0),
         when_created TEXT NOT NULL,
         who_created INTEGER NOT NULL,
         FOREIGN KEY (winner) REFERENCES Accounts (account_id),
@@ -72,14 +79,16 @@ class DatabaseManager:
         game_id INTEGER NOT NULL,
         account_id INTEGER NOT NULL,
         when_joined TEXT NOT NULL,
+        has_leaved INTEGER NOT NULL DEFAULT 0 CHECK (has_leaved == 1 OR has_leaved == 0),
+        when_leaved TEXT,
         FOREIGN KEY (game_id) REFERENCES Games (game_id),
         FOREIGN KEY (account_id) REFERENCES Accounts (account_id)        
     );
     CREATE TABLE IF NOT EXISTS GameLogs (
         gamelog_id INTEGER PRIMARY KEY,
         log_number INTEGER NOT NULL CHECK (log_number > 0),
-        row_number INTEGER NOT NULL CHECK (row_number >= 0),
-        column_number INTEGER NOT NULL CHECK (column_number >= 0),
+        row_number INTEGER NOT NULL CHECK (row_number > 0),
+        column_number INTEGER NOT NULL CHECK (column_number > 0),
         letter TEXT NOT NULL CHECK (letter == 'S' OR letter == 'O'),
         game_id INTEGER NOT NULL,
         account_id INTEGER NOT NULL,
@@ -168,6 +177,67 @@ class DatabaseManager:
             return False
 
     @db_transaction
+    def join_game(self, session_token : str, game_id : int, creator_username : str) -> int:
+        account_id = self.validate_session_token(session_token)
+        if account_id == -1:
+            raise InvalidSessionTokenError("Session token is not valid.")
+        self.db_cursor.execute(
+            "SELECT player_count, username FROM Games INNER JOIN Accounts ON account_id = game_id WHERE (game_id = ? AND is_running = 1);",
+            (game_id,)
+        )
+        games = self.db_cursor.fetchall()
+        if len(games) != 1:
+            raise WrongGameIDError("Game ID or username is not valid.")
+        game = games[0]
+        game_player_count = game[0]
+        game_creator_username = game[1]
+        if creator_username != game_creator_username:
+            raise WrongGameIDError("Game ID or username is not valid.")
+        self.db_cursor.execute(
+            "SELECT account_id FROM Players WHERE (account_id = ? AND game_id = ? AND has_leaved = 0);",
+            (account_id, game_id)
+        )
+        game_players = self.db_cursor.fetchall()
+        if len(game_players) == game_player_count:
+            raise GameNewPlayerBannedError("This game does not accept new players anymore.")
+        for player in game_players:
+            if player[0] == account_id:
+                return account_id
+        dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.db_cursor.execute(
+            "INSERT INTO Players (game_id, account_id, when_joined) VALUES (?, ?, ?);",
+            (game_id, account_id, dt_str)
+        )
+        self.db_connection.commit()
+        player_id = self.db_cursor.lastrowid
+        return account_id
+
+    @db_transaction
+    def new_game(self, session_token : str, board_size : int, player_count : int, is_public : bool) -> tuple:
+        account_id = self.validate_session_token(session_token)
+        if account_id == -1:   
+            raise InvalidSessionTokenError("Session token is not valid.")
+        dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.db_cursor.execute(
+            "INSERT INTO Games (player_count, is_public, board_size, when_created, who_created) VALUES (?, ?, ?, ?, ?);",
+            (player_count, 1 if is_public else 0, board_size, dt_str, account_id)
+        )
+        self.db_connection.commit()
+        game_id = self.db_cursor.lastrowid
+        dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.db_cursor.execute(
+            "INSERT INTO Players (game_id, account_id, when_joined) VALUES (?, ?, ?);",
+            (game_id, account_id, dt_str)
+        )
+        self.db_connection.commit()
+        self.db_cursor.execute(
+            "SELECT username FROM Accounts WHERE (account_id = ?);",
+            (account_id,)
+        )
+        username = self.db_cursor.fetchone()[0]        
+        return game_id, account_id, username
+
+    @db_transaction
     def get_account(self, session_token : str) -> dict:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:   
@@ -210,21 +280,13 @@ class DatabaseManager:
             (dt_str, account_id)
         )
         self.db_connection.commit()
+        token = secrets.token_urlsafe(50)
         self.db_cursor.execute(
-            "SELECT token FROM Sessions WHERE (account_id = ?);",
-            (account_id,)
-        )        
-        tokens = self.db_cursor.fetchall()
-        if len(tokens) > 0:
-            return tokens[0][0]
-        else:
-            token = secrets.token_urlsafe(50)
-            self.db_cursor.execute(
-                "INSERT INTO Sessions (token, when_created, account_id) VALUES (?, ?, ?)",
-                (token, dt_str, account_id)
-            )
-            self.db_connection.commit()
-            return token
+            "INSERT INTO Sessions (token, when_created, account_id) VALUES (?, ?, ?);",
+            (token, dt_str, account_id)
+        )
+        self.db_connection.commit()
+        return token
     
     @db_transaction
     def logout(self, session_token : str) -> bool: # deletes the session token on success
@@ -232,8 +294,8 @@ class DatabaseManager:
         if account_id == -1:
             raise InvalidSessionTokenError("Session token is not valid.")
         self.db_cursor.execute(
-            "DELETE FROM Sessions WHERE (account_id = ?)",
-            (account_id,)
+            "DELETE FROM Sessions WHERE (account_id = ? AND token = ?);",
+            (account_id, session_token)
         )
         self.db_connection.commit()
         return True
@@ -262,6 +324,12 @@ class DatabaseManager:
             (hashlib.sha512(new_password.encode(encoding="utf-8")).hexdigest(), account_id)
         )
         self.db_connection.commit()
+        # delete all sessions
+        self.db_cursor.execute(
+            "DELETE FROM Sessions WHERE (account_id = ?);",
+            (account_id,)
+        )
+        self.db_connection.commit()        
         return True
 
     @db_transaction
@@ -293,6 +361,12 @@ class DatabaseManager:
             (username, account_id)
         )
         self.db_connection.commit()
+        # delete all sessions
+        self.db_cursor.execute(
+            "DELETE FROM Sessions WHERE (account_id = ?);",
+            (account_id,)
+        )
+        self.db_connection.commit()        
         return True
 
     @db_transaction
@@ -335,6 +409,12 @@ class DatabaseManager:
             )
         )
         self.db_connection.commit()
+        # delete all sessions
+        self.db_cursor.execute(
+            "DELETE FROM Sessions WHERE (account_id = ?);",
+            (account_id,)
+        )
+        self.db_connection.commit()        
         return True
 
     def close_connection(self):
