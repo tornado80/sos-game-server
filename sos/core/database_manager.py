@@ -205,15 +205,15 @@ class DatabaseManager:
         if creator_username != game_creator_username:
             raise WrongGameIDError("Game ID or username is not valid.")
         self.db_cursor.execute(
-            "SELECT account_id FROM Players WHERE (account_id = ? AND game_id = ? AND has_leaved = 0);",
-            (account_id, game_id)
+            "SELECT account_id FROM Players WHERE (game_id = ?);",
+            (game_id,)
         )
         game_players = self.db_cursor.fetchall()
-        if len(game_players) == game_player_count:
-            raise GameNewPlayerBannedError("This game does not accept new players anymore.")
         for player in game_players:
             if player[0] == account_id:
                 return account_id
+        if len(game_players) == game_player_count:
+            raise GameNewPlayerBannedError("This game does not accept new players anymore.")                
         dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.db_cursor.execute(
             "INSERT INTO Players (game_id, account_id, when_joined) VALUES (?, ?, ?);",
