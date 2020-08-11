@@ -21,6 +21,9 @@ class GameNewPlayerBannedError(Exception):
 class WrongGameIDError(Exception):
     pass
 
+class RepeatedPasswordError(Exception):
+    pass
+
 db_lock = Lock()
 
 def db_transaction(function):
@@ -188,6 +191,15 @@ class DatabaseManager:
             return False
 
     @db_transaction
+    def set_game_ended(self, game_id : int) -> bool:
+        self.db_cursor.execute(
+            "UPDATE Games SET is_running = 0 WHERE (game_id = ?);",
+            (game_id,)
+        )
+        self.db_connection.commit()
+        return True
+
+    @db_transaction
     def join_game(self, session_token : str, game_id : int, creator_username : str) -> int:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:
@@ -336,6 +348,8 @@ class DatabaseManager:
             raise InvalidSessionTokenError("Session token is not valid.")
         if not self.check_password(account_id, current_password):
             raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
+        if current_password == new_password:
+            raise RepeatedPasswordError("New password is the same as old password. Operation aborted.")
         self.db_cursor.execute(
             "UPDATE Accounts SET password = ? WHERE account_id = ?;",
             (hashlib.sha512(new_password.encode(encoding="utf-8")).hexdigest(), account_id)

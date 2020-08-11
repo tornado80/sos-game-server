@@ -1,6 +1,7 @@
 from threading import Thread, Lock, RLock
 import socket
-from time import sleep
+from time import sleep, time
+import random
 from concurrent.futures import ThreadPoolExecutor
 from sos.utils.protocol import Packet
 from sos.core.database_manager import DatabaseManager
@@ -46,6 +47,7 @@ class Queue:
             return None        
 
 class GameRunner(Thread):
+    MAX_PLAYER = 20
     def __init__(self, db_manager, game_id):
         super().__init__()
         self.__db_manager = db_manager
@@ -53,8 +55,23 @@ class GameRunner(Thread):
         self.__players_connections = {}
         self.__players_address = {}
         self.__players_scores = {}
+        self.__players_colors = {}
+        self.__players_turn = []
+        self.__current_player_turn = None
+        self.__generated_colors = []
+        self.__online_players = 0
+        self.__last_activity = time()
         self._tasks_queue = Queue()
         self.get_game_information()
+        self.__game_board = [[None for i in range(self.__board_size)] for j in range(self.__board_size)]
+        self.generate_colors()
+
+    def generate_colors(self):
+        i = int(random.random() * 360)
+        step = 360 // self.MAX_PLAYER
+        for j in range(self.MAX_PLAYER):
+            self.__generated_colors.append((i + j * step) % 360)
+        random.shuffle(self.__generated_colors)
 
     def get_game_information(self):
         result = self.__db_manager.get_game_information(self.__game_id)
@@ -78,10 +95,12 @@ class GameRunner(Thread):
         response = Packet()
         response["command"] = "game_runner_players_status"
         response["data"] = {
-            "players" : {}
+            "players" : {}, 
+            "colors" : {}
         }
         for player_account_id, player_connection in self.__players_connections.items():
             player_username = self.__db_manager.get_username_from_account_id(player_account_id)
+            response["data"]["colors"][player_username] = self.__players_colors[player_account_id]
             if player_connection != None:
                 response["data"]["players"][player_username] = str(self.__players_scores[player_account_id])
             else:
@@ -91,6 +110,26 @@ class GameRunner(Thread):
                 response.send(player_connection)
 
     def broadcast_board_status(self):
+        response = Packet()
+        response["command"] = "game_runner_board_status"
+        response["data"] = {
+            "board" : []
+        }
+        for i in range(self.__board_size):
+            response["data"]["board"].append([])
+            for j in range(self.__board_size):
+                if self.__game_board[i][j]:
+                    response["data"]["board"][i].append([
+                            self.__players_colors[self.__game_board[i][j][0]], self.__game_board[i][j][1]
+                        ]
+                    )
+                else:
+                    response["data"]["board"][i].append(["silver", ""])
+        for player_connection in self.__players_connections.values():
+            if player_connection != None:
+                response.send(player_connection)
+
+    def broadcast_start_game(self):
         pass
 
     def run(self):
@@ -109,10 +148,13 @@ class GameRunner(Thread):
                         } 
                         response.send(sock)
                     else:
+                        self.__online_players += 1
                         self.__players_connections[account_id] = sock
                         self.__players_address[account_id] = client_address
                         if account_id not in self.__players_scores:
                             self.__players_scores[account_id] = 0
+                        if account_id not in self.__players_colors:
+                            self.__players_colors[account_id] = "hsl({}, 100%, 50%)".format(str(self.__generated_colors[len(self.__players_connections)]))
                         Thread(target=self.player_listener, args=(account_id, sock)).start()
                         response = Packet()
                         response["command"] = "game_runner_game_details"
@@ -120,11 +162,14 @@ class GameRunner(Thread):
                             "game_id" : self.__game_id,
                             "board_size" : self.__board_size,
                             "player_count" : self.__player_count,
-                            "creator_username" : self.__who_created_username
+                            "creator_username" : self.__who_created_username,
+                            "color" : self.__players_colors[account_id]
                         }
                         response.send(sock)
                         self.broadcast_players_status()
                         self.broadcast_board_status()
+                        if len(self.__players_connections) == self.__player_count:
+                            self.broadcast_start_game()
                 elif task["command"] == "disconnect_player_task":
                     account_id = task["account_id"]
                     sock = self.__players_connections[account_id]
@@ -134,7 +179,14 @@ class GameRunner(Thread):
                     self.__players_connections[account_id].close()
                     self.__players_connections[account_id] = None
                     self.broadcast_players_status()
+                    self.__online_players -= 1
+                    if self.__online_players == 0:
+                        self.__last_activity = time()
             else:
+                if self.__online_players == 0 and (time() - self.__last_activity) > 60:
+                    self.__db_manager.set_game_ended(self.__game_id)
+                    print("Game Runner deleted")
+                    return
                 sleep(0.01)
 
 class ClientTask:
