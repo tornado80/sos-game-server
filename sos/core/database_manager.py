@@ -190,7 +190,20 @@ class DatabaseManager:
         else:
             return False
 
-    @db_transaction
+    def add_game_log(self, game_id : int, account_id : int, letter : str, row_number : int, column_number : int) -> bool:
+        self.db_cursor.execute(
+            "SELECT log_number FROM GameLogs WHERE (game_id = ?);",
+            (game_id,)
+        )
+        new_log_number = len(self.db_cursor.fetchall()) + 1
+        dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.db_cursor.execute(
+            "INSERT INTO GameLogs (log_number, row_number, column_number, letter, game_id, account_id, log_datetime) VALUES (?, ?, ?, ?, ?, ?, ?);",
+            (new_log_number, row_number, column_number, letter, game_id, account_id, dt_str)
+        )
+        self.db_connection.commit()
+        return True
+
     def set_game_ended(self, game_id : int) -> bool:
         self.db_cursor.execute(
             "UPDATE Games SET is_running = 0 WHERE (game_id = ?);",

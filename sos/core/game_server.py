@@ -90,6 +90,15 @@ class GameRunner(Thread):
                 }
                 self._tasks_queue.enqueue(task)
                 return
+            elif response["command"] == "game_runner_my_turn":
+                task = {
+                    "command" : "player_turn_done_task",
+                    "account_id" : account_id,
+                    "row" : response["data"]["row"],
+                    "column" : response["data"]["column"],
+                    "letter" : response["data"]["letter"]
+                }
+                self._tasks_queue.enqueue(task)
 
     def broadcast_players_status(self):
         response = Packet()
@@ -130,7 +139,19 @@ class GameRunner(Thread):
                 response.send(player_connection)
 
     def broadcast_start_game(self):
-        pass
+        self.__players_turn = list(self.__players_connections.keys())
+        random.shuffle(self.__players_turn)
+        self.__current_player_turn = 0
+        self.broadcast_player_turn()
+
+    def broadcast_player_turn(self):
+        account_id = self.__players_turn[self.__current_player_turn]
+        player_connection = self.__players_connections[account_id]
+        if player_connection == None:
+            return
+        response = Packet()
+        response["command"] = "game_runner_your_turn"
+        response.send(player_connection)
 
     def run(self):
         while True:
@@ -168,8 +189,12 @@ class GameRunner(Thread):
                         response.send(sock)
                         self.broadcast_players_status()
                         self.broadcast_board_status()
-                        if len(self.__players_connections) == self.__player_count:
-                            self.broadcast_start_game()
+                        if self.__current_player_turn != None:
+                            if self.__players_turn[self.__current_player_turn] == account_id:
+                                self.broadcast_player_turn()
+                        else:
+                            if len(self.__players_connections) == self.__player_count: # game has not started yet but enough players
+                                self.broadcast_start_game()
                 elif task["command"] == "disconnect_player_task":
                     account_id = task["account_id"]
                     sock = self.__players_connections[account_id]
@@ -182,10 +207,21 @@ class GameRunner(Thread):
                     self.__online_players -= 1
                     if self.__online_players == 0:
                         self.__last_activity = time()
+                elif task["command"] == "player_turn_done_task":
+                    account_id = task["account_id"]
+                    row = task["row"]
+                    column = task["column"]
+                    letter = task["letter"]
+                    self.__game_board[row][column] = [account_id, letter]
+                    self.__db_manager.add_game_log(self.__game_id, account_id, letter, row, column)
+                    self.__current_player_turn += 1
+                    if self.__current_player_turn == len(self.__players_turn):
+                        self.__current_player_turn = 0
+                    self.broadcast_board_status()
+                    self.broadcast_player_turn()
             else:
-                if self.__online_players == 0 and (time() - self.__last_activity) > 60:
+                if self.__online_players == 0 and (time() - self.__last_activity) > 30:
                     self.__db_manager.set_game_ended(self.__game_id)
-                    print("Game Runner deleted")
                     return
                 sleep(0.01)
 
