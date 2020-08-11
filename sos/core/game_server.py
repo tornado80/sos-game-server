@@ -1,4 +1,4 @@
-from threading import Thread, Lock
+from threading import Thread, Lock, RLock
 import socket
 from time import sleep
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +28,7 @@ class Queue:
             self.head = self.tail = node
         else:
             self.tail.next = node
+            self.tail = node
         self.lock.release()
         return True
 
@@ -45,17 +46,93 @@ class Queue:
             return None        
 
 class GameRunner(Thread):
-    def __init__(self):
+    def __init__(self, db_manager, game_id):
         super().__init__()
+        self.__db_manager = db_manager
+        self.__game_id = game_id
         self.__players_connections = {}
+        self.__players_address = {}
+        self.__players_scores = {}
         self._tasks_queue = Queue()
+        self.get_game_information()
+
+    def get_game_information(self):
+        result = self.__db_manager.get_game_information(self.__game_id)
+        self.__player_count = result[0]
+        self.__board_size = result[1]
+        self.__who_created = result[2]
+        self.__who_created_username = result[3]        
+
+    def player_listener(self, account_id, sock):
+        while True:
+            response = Packet.recv(sock)
+            if response["command"] == "game_runner_disconnect":
+                task = {
+                    "command" : "disconnect_player_task",
+                    "account_id" : account_id
+                }
+                self._tasks_queue.enqueue(task)
+                return
 
     def run(self):
         while True:
             if not self._tasks_queue.is_empty():
                 task = self._tasks_queue.dequeue()
-                if task["command"] == "new_player_connection":
-                    pass
+                if task["command"] == "new_player_connection_task":
+                    account_id = task["account_id"]
+                    sock = task["socket"]
+                    client_address = task["client_address"]
+                    if account_id in self.__players_connections and self.__players_connections[account_id] != None:
+                            response = Packet()
+                            response["command"] = "game_runner_new_player_banned"
+                            response["data"] = {
+                                "error" : "You have joined the game with another session."
+                            } 
+                            response.send(sock)
+                    else:
+                        self.__players_connections[account_id] = sock
+                        self.__players_address[account_id] = client_address
+                        if account_id not in self.__players_scores:
+                            self.__players_scores[account_id] = 0
+                        new_player_account_id = account_id
+                        Thread(target=self.player_listener, args=(new_player_account_id, sock)).start()
+                        response = Packet()
+                        response["command"] = "game_runner_game_details"
+                        response["data"] = {
+                            "game_id" : self.__game_id,
+                            "board_size" : self.__board_size,
+                            "player_count" : self.__player_count,
+                            "creator_username" : self.__who_created_username
+                        }
+                        response.send(sock)
+                        new_player_username = self.__db_manager.get_username_from_account_id(account_id)
+                        for player_account_id, player_connection in self.__players_connections.items():
+                            if player_connection == None:
+                                continue
+                            response = Packet()
+                            response["command"] = "game_runner_new_player_connected"
+                            response["data"] = {
+                                "player" : [new_player_account_id, new_player_username, self.__players_scores[new_player_account_id]]
+                            }
+                            response.send(player_connection)
+                elif task["command"] == "disconnect_player_task":
+                    account_id = task["account_id"]
+                    sock = self.__players_connections[account_id]
+                    response = Packet()
+                    response["command"] = "game_runner_abort"
+                    response.send(sock)
+                    self.__players_connections[account_id].close()
+                    self.__players_connections[account_id] = None
+                    new_player_username = self.__db_manager.get_username_from_account_id(account_id)
+                    for account_id, player_connection in self.__players_connections.items():
+                        if player_connection == None:
+                            continue
+                        response = Packet()
+                        response["command"] = "game_runner_player_disconnected"
+                        response["data"] = {
+                            "player" : [account_id, new_player_username, "disconnected"]
+                        }
+                        response.send(player_connection)
             else:
                 sleep(0.01)
 
@@ -237,29 +314,21 @@ class ClientTask:
                 player_count = data["player_count"]
                 is_public = data["is_public"]
                 db_result = self.__db_manager.new_game(session_token, board_size, player_count, is_public)
-                response = Packet()
-                response["command"] = "new_game_response"
                 if not isinstance(db_result, Exception):
                     game_id = db_result[0]
                     account_id = db_result[1]
-                    username = db_result[2]
-                    response["data"] = {
-                        "game_id" : game_id,
-                        "creator_username" : username
-                    }
-                    response.send(self.__sock)
-                    """
                     long_time_connection = True
                     self.__game_server.add_to_runners(game_id)
                     task = {
-                        "command" : "new_player_connection",
+                        "command" : "new_player_connection_task",
                         "account_id" : account_id,
                         "socket" : self.__sock,
                         "client_address" : self.__client_address
                     }
                     self.__game_server._game_runners[game_id]._tasks_queue.enqueue(task)
-                    """
                 else:
+                    response = Packet()
+                    response["command"] = "new_game_response"                    
                     response["data"] = {
                         "error" : str(db_result)
                     }
@@ -269,25 +338,19 @@ class ClientTask:
                 game_id = data["game_id"]
                 creator_username = data["creator_username"]
                 db_result = self.__db_manager.join_game(session_token, game_id, creator_username)
-                response = Packet()
-                response["command"] = "join_game_response"
                 if not isinstance(db_result, Exception):
                     account_id = db_result
-                    response["data"] = {
-                        "ok" : "done"
-                    }
-                    response.send(self.__sock)
-                    """
                     long_time_connection = True
                     task = {
-                        "command" : "new_player_connection",
+                        "command" : "new_player_connection_task",
                         "account_id" : account_id,
                         "socket" : self.__sock,
                         "client_address" : self.__client_address
                     }
                     self.__game_server._game_runners[game_id]._tasks_queue.enqueue(task)
-                    """
                 else:
+                    response = Packet()
+                    response["command"] = "join_game_response"                    
                     response["data"] = {
                         "error" : str(db_result)
                     }
@@ -304,18 +367,15 @@ class GameServer(Thread):
         self.__server_port = port if port else GameServer.DEFAULT_PORT
         self.__db_manager = db_manager
         self._game_runners = {}
-        self.__game_runners_lock = Lock()
         self.__sock = None
         self.__executor = None
         self.__is_paused = False
         self.__is_stopped = False
 
     def add_to_runners(self, game_id):
-        self._game_runners_lock.acquire()
         runner = GameRunner(self.__db_manager, game_id)
         self._game_runners[game_id] = runner
         runner.start()
-        self.__game_runners_lock.release()
 
     def run(self):
         self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

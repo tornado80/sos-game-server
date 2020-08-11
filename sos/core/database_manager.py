@@ -154,6 +154,17 @@ class DatabaseManager:
         else:
             return -1
 
+    def get_username_from_account_id(self, account_id : int) -> str:
+        self.db_cursor.execute(
+            "SELECT username FROM Accounts WHERE (account_id = ?);",
+            (account_id,)
+        )
+        result = self.db_cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            return ""
+
     def does_username_exist(self, username : str) -> int:
         self.db_cursor.execute(
             "SELECT account_id FROM Accounts WHERE (username = ?);",
@@ -182,7 +193,7 @@ class DatabaseManager:
         if account_id == -1:
             raise InvalidSessionTokenError("Session token is not valid.")
         self.db_cursor.execute(
-            "SELECT player_count, username FROM Games INNER JOIN Accounts ON account_id = game_id WHERE (game_id = ? AND is_running = 1);",
+            "SELECT player_count, username FROM Games INNER JOIN Accounts ON account_id = who_created WHERE (game_id = ? AND is_running = 1);",
             (game_id,)
         )
         games = self.db_cursor.fetchall()
@@ -212,6 +223,17 @@ class DatabaseManager:
         player_id = self.db_cursor.lastrowid
         return account_id
 
+    def get_game_information(self, game_id : int):
+        self.db_cursor.execute(
+            "SELECT player_count, board_size, who_created, username FROM Games INNER JOIN Accounts ON who_created = account_id WHERE (game_id = ?);",
+            (game_id,)
+        )
+        result = self.db_cursor.fetchone()
+        if result:
+            return result
+        else:
+            raise WrongGameIDError("Game ID is not valid.")
+
     @db_transaction
     def new_game(self, session_token : str, board_size : int, player_count : int, is_public : bool) -> tuple:
         account_id = self.validate_session_token(session_token)
@@ -229,13 +251,8 @@ class DatabaseManager:
             "INSERT INTO Players (game_id, account_id, when_joined) VALUES (?, ?, ?);",
             (game_id, account_id, dt_str)
         )
-        self.db_connection.commit()
-        self.db_cursor.execute(
-            "SELECT username FROM Accounts WHERE (account_id = ?);",
-            (account_id,)
-        )
-        username = self.db_cursor.fetchone()[0]        
-        return game_id, account_id, username
+        self.db_connection.commit()        
+        return game_id, account_id
 
     @db_transaction
     def get_account(self, session_token : str) -> dict:
