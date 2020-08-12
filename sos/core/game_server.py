@@ -66,7 +66,7 @@ class GameRunner(Thread):
         self.__has_winner = False
         self._tasks_queue = Queue()
         self.get_game_information()
-        self.__game_board = [[[None, ""] for i in range(self.__board_size)] for j in range(self.__board_size)]
+        self.__game_board = [[[None, None] for i in range(self.__board_size)] for j in range(self.__board_size)]
         self.generate_colors()
 
     def generate_colors(self):
@@ -103,21 +103,31 @@ class GameRunner(Thread):
                     "letter" : response["data"]["letter"]
                 }
                 self._tasks_queue.enqueue(task)
+            elif response["command"] == "game_runner_hint":
+                task = {
+                    "command" : "please_help_task",
+                    "account_id" : account_id
+                }
+                self._tasks_queue.enqueue(task)                
 
     def broadcast_players_status(self):
         response = Packet()
         response["command"] = "game_runner_players_status"
         response["data"] = {
-            "players" : {}, 
-            "colors" : {}
+            "scores" : {}, 
+            "colors" : {},
+            "hints" : {},
+            "status" : {}
         }
         for player_account_id, player_connection in self.__players_connections.items():
             player_username = self.__db_manager.get_username_from_account_id(player_account_id)
             response["data"]["colors"][player_username] = self.__players_colors[player_account_id]
+            response["data"]["scores"][player_username] = str(self.__players_scores[player_account_id])
+            response["data"]["hints"][player_username] = str(self.__players_hints[player_account_id]) + "h"
             if player_connection != None:
-                response["data"]["players"][player_username] = str(self.__players_scores[player_account_id])
+                response["data"]["status"][player_username] = "online"
             else:
-                response["data"]["players"][player_username] = "offline"
+                response["data"]["status"][player_username] = "offline"
         for player_connection in self.__players_connections.values():
             if player_connection != None:
                 response.send(player_connection)
@@ -174,7 +184,7 @@ class GameRunner(Thread):
                 response.send(player_connection)
         self.__has_winner = True        
 
-    def check_for_sos_triple(self, account_id, row, column, letter):
+    def check_for_sos_triple(self, account_id, row, column, letter, no_act = False):
         neighbour_cells = [
             (row - 1, column - 1),
             (row - 1, column),
@@ -207,8 +217,9 @@ class GameRunner(Thread):
                             if self.__game_board[second_layer_cell[0]][second_layer_cell[1]][1] == "S":
                                 found = True
                                 counter += 1
-                                self.__game_board[second_layer_cell[0]][second_layer_cell[1]][0] = account_id
-                                self.__game_board[cell[0]][cell[1]][0] = account_id
+                                if not no_act:
+                                    self.__game_board[second_layer_cell[0]][second_layer_cell[1]][0] = account_id
+                                    self.__game_board[cell[0]][cell[1]][0] = account_id
         else: # letter == "O"
             for i in range(4):
                 row1 = neighbour_cells[i][0]
@@ -219,9 +230,22 @@ class GameRunner(Thread):
                     if self.__game_board[row1][col1][1] == self.__game_board[row2][col2][1] == "S":
                         found = True
                         counter += 1
-                        self.__game_board[row1][col1][0] = account_id
-                        self.__game_board[row2][col2][0] = account_id
+                        if not no_act:
+                            self.__game_board[row1][col1][0] = account_id
+                            self.__game_board[row2][col2][0] = account_id
         return found, counter
+
+    def find_good_place(self):
+        for i in range(self.__board_size):
+            for j in range(self.__board_size):
+                if self.__game_board[i][j][0] is None:
+                    found, _ = self.check_for_sos_triple(None, i, j, "S", no_act = True)
+                    if found:
+                        return i, j, "S"
+                    found, _ = self.check_for_sos_triple(None, i, j, "O", no_act = True)
+                    if found:
+                        return i, j, "O"
+        return None
 
     def run(self):
         while True:
@@ -251,6 +275,8 @@ class GameRunner(Thread):
                         self.__players_address[account_id] = client_address
                         if account_id not in self.__players_scores:
                             self.__players_scores[account_id] = 0
+                        if account_id not in self.__players_hints:
+                            self.__players_hints[account_id] = 0                            
                         if account_id not in self.__players_colors:
                             self.__players_colors[account_id] = "hsl({}, 100%, 50%)".format(str(self.__generated_colors[len(self.__players_connections)]))
                         Thread(target=self.player_listener, args=(account_id, sock)).start()
@@ -307,6 +333,31 @@ class GameRunner(Thread):
                             self.broadcast_winner()
                         else:
                             self.broadcast_player_turn()
+                elif task["command"] == "please_help_task":
+                    account_id = task["account_id"]
+                    response = Packet()
+                    response["command"] = "game_runner_hint_result"                    
+                    if self.__players_turn[self.__current_player_turn] == account_id:
+                        if self.__players_hints[account_id] < self.__max_hint:
+                            self.__players_hints[account_id] += 1
+                            if self.__players_hints[account_id] == self.__max_hint:
+                                response["finished"] = True
+                            result = self.find_good_place()
+                            self.__players_scores[account_id] -= 1
+                            if result == None:
+                                self.__db_manager.add_game_hint(self.__game_id, account_id, "", 0, 0)
+                                response["result"] = "Unfortunately no hint is available."
+                            else:
+                                self.__db_manager.add_game_hint(self.__game_id, account_id, result[2], result[0] + 1, result[1] + 1)
+                                response["result"] = "You can put \"{}\" at row {} and column {} to obtain a SOS.".format(
+                                    result[2], str(result[0] + 1), str(result[1] + 1)
+                                )
+                        else:
+                            response["error"] = "You have used all your hints."
+                    else:               
+                        response["error"] = "It is not your turn."
+                    response.send(self.__players_connections[account_id])
+                    self.broadcast_players_status()
             else:
                 if self.__online_players == 0 and self.__has_winner:
                     return

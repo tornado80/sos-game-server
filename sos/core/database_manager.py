@@ -217,6 +217,20 @@ class DatabaseManager:
         self.db_connection.commit()
         return True
 
+    def add_game_hint(self, game_id : int, account_id : int, letter : str, row_number : int, column_number : int) -> bool:
+        self.db_cursor.execute(
+            "SELECT hint_number FROM GameHints WHERE (game_id = ?);",
+            (game_id,)
+        )
+        new_hint_number = len(self.db_cursor.fetchall()) + 1
+        dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.db_cursor.execute(
+            "INSERT INTO GameHints (hint_number, row_number, column_number, letter, game_id, account_id, hint_datetime) VALUES (?, ?, ?, ?, ?, ?, ?);",
+            (new_hint_number, row_number + 1, column_number + 1, letter, game_id, account_id, dt_str)
+        )
+        self.db_connection.commit()
+        return True
+
     @db_transaction
     def update_account_games_and_wins(self, account_id : int, games_changes : int, wins_changes : int) -> bool:
         self.db_cursor.execute(
