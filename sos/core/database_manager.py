@@ -24,6 +24,9 @@ class WrongGameIDError(Exception):
 class RepeatedPasswordError(Exception):
     pass
 
+class AccountDeletedAlready(Exception):
+    pass
+
 db_lock = Lock()
 
 def db_transaction(function):
@@ -349,12 +352,12 @@ class DatabaseManager:
         }
 
     @db_transaction
-    def login(self, username : str, password : str) -> str: # returns session token on success
+    def login(self, username : str, password : str, is_admin = False) -> str: # returns session token on success
         account_id = self.does_username_exist(username)
         if account_id == -1:
             raise WrongUsernamePasswordError("Username or password is wrong.")
         self.db_cursor.execute(
-            "SELECT password, is_disabled FROM Accounts WHERE (account_id = ?);",
+            "SELECT password, is_disabled, is_admin FROM Accounts WHERE (account_id = ?);",
             (account_id,)
         )
         result = self.db_cursor.fetchone()
@@ -364,6 +367,9 @@ class DatabaseManager:
             raise WrongUsernamePasswordError("Username or password is wrong.")
         if is_disabled:
             raise WrongUsernamePasswordError("Username or password is wrong.")
+        if is_admin:
+            if result[2] == 0:
+                raise WrongUsernamePasswordError("Username or password is wrong.")
         dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.db_cursor.execute(
             "UPDATE Accounts SET last_login = ? WHERE (account_id = ?);",
@@ -376,6 +382,7 @@ class DatabaseManager:
             (token, dt_str, account_id)
         )
         self.db_connection.commit()
+        self.notify_admin() 
         return token
     
     @db_transaction
@@ -400,6 +407,7 @@ class DatabaseManager:
             (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, dt_str, 1 if is_admin else 0)
         )
         self.db_connection.commit()
+        self.notify_admin() 
         return True
 
     @db_transaction
@@ -421,7 +429,8 @@ class DatabaseManager:
             "DELETE FROM Sessions WHERE (account_id = ?);",
             (account_id,)
         )
-        self.db_connection.commit()        
+        self.db_connection.commit()
+        self.notify_admin()         
         return True
 
     @db_transaction
@@ -436,6 +445,7 @@ class DatabaseManager:
             (first_name, last_name, account_id)
         )
         self.db_connection.commit()
+        self.notify_admin() 
         return True
 
     @db_transaction
@@ -458,24 +468,64 @@ class DatabaseManager:
             "DELETE FROM Sessions WHERE (account_id = ?);",
             (account_id,)
         )
-        self.db_connection.commit()        
+        self.db_connection.commit()
+        self.notify_admin()         
         return True
 
     @db_transaction
-    def edit_account(self, session_token : str, current_password : str, username : str, password : str, first_name : str, last_name : str, is_admin = False) -> bool:
-        account_id = self.validate_session_token(session_token)
-        if account_id == -1:   
-            raise InvalidSessionTokenError("Session token is not valid.")
-        if not self.check_password(account_id, current_password):
-            raise WrongUsernamePasswordError("Current password is wrong. Operation aborted.")
+    def edit_account(self, account_id : int, username : str, password : str, first_name : str, last_name : str, is_admin : bool, is_disabled : bool) -> bool:
         suspected_account_id = self.does_username_exist(username)
         if suspected_account_id != -1 and suspected_account_id != account_id:
             raise ExistingUsernameError("This username exists already.")
         self.db_cursor.execute(
-            "UPDATE Accounts SET username = ?, password = ?, first_name = ?, last_name = ?, is_admin = ? WHERE account_id = ?;",
-            (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, 1 if is_admin else 0, account_id)
+            "UPDATE Accounts SET username = ?, password = ?, first_name = ?, last_name = ?, is_admin = ?, is_disabled = ? WHERE account_id = ?;",
+            (username, hashlib.sha512(password.encode(encoding="utf-8")).hexdigest(), first_name, last_name, 1 if is_admin else 0, 1 if is_disabled else 0, account_id)
         )
         self.db_connection.commit()
+        self.notify_admin() 
+        return True
+
+    def ensure_one_admin_exists(self):
+        self.db_cursor.execute(
+            "SELECT account_id FROM Accounts WHERE (is_admin = 1);"
+        )
+        results = self.db_cursor.fetchall()
+        if len(results) == 0:
+            self.add_account("admin", "123456", "ADMIN", "ADMIN", is_admin = True)
+        return True
+
+    @db_transaction
+    def remove_account_by_id(self, account_id : int) -> bool:
+        self.db_cursor.execute(
+            "SELECT when_deleted FROM Accounts WHERE (account_id = ?);",
+            (account_id,)
+        )
+        when_deleted = self.db_cursor.fetchone()[0]
+        if when_deleted != None:
+            raise AccountDeletedAlready("Account has been deleted already.")
+        # we will not delete account, instead update it to deleted account.
+        # since in case of deleting account we have to delete the corresponding  
+        dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        self.db_cursor.execute(
+            "UPDATE Accounts SET username = ?, password = ?, first_name = ?, last_name = ?, is_disabled = ?, when_deleted = ? WHERE account_id = ?;",
+            (
+                "DELETED_ACCOUNT_{}".format(account_id), 
+                "DELETED_ACCOUNT_PASSWORD_{}".format(account_id),
+                "DELETED",
+                "ACCOUNT",
+                1,
+                dt_str,
+                account_id
+            )
+        )
+        self.db_connection.commit()
+        # delete all sessions
+        self.db_cursor.execute(
+            "DELETE FROM Sessions WHERE (account_id = ?);",
+            (account_id,)
+        )
+        self.db_connection.commit()
+        self.notify_admin()   
         return True
 
     @db_transaction
@@ -506,11 +556,15 @@ class DatabaseManager:
             "DELETE FROM Sessions WHERE (account_id = ?);",
             (account_id,)
         )
-        self.db_connection.commit()        
+        self.db_connection.commit()
+        self.notify_admin()        
         return True
 
     def close_connection(self):
         self.db_connection.close()
+
+    def notify_admin(self):
+        pass
 
     def show_errors_to_user(self, err):
         print(err)

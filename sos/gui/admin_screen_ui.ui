@@ -6,13 +6,83 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>400</width>
-    <height>300</height>
+    <width>790</width>
+    <height>623</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="0" column="1">
+    <widget class="QPushButton" name="newAccountButton">
+     <property name="text">
+      <string>New account</string>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="3">
+    <widget class="QPushButton" name="stopServerButton">
+     <property name="text">
+      <string>Stop server</string>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="0">
+    <widget class="QPushButton" name="allAccountsButton">
+     <property name="text">
+      <string>All accounts</string>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="7">
+    <widget class="QPushButton" name="signoutButton">
+     <property name="text">
+      <string>Sign Out</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="0" colspan="8">
+    <widget class="QMdiArea" name="mdiArea"/>
+   </item>
+   <item row="0" column="2">
+    <widget class="QPushButton" name="startServerButton">
+     <property name="text">
+      <string>Start server</string>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="4">
+    <widget class="QLineEdit" name="serverAddressLineEdit">
+     <property name="inputMask">
+      <string>000.000.000.000:00000;-</string>
+     </property>
+     <property name="text">
+      <string>127.0.0.1:12345</string>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="6">
+    <spacer name="horizontalSpacer">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>40</width>
+       <height>20</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item row="0" column="5">
+    <widget class="QLabel" name="serverStatusLabel">
+     <property name="text">
+      <string>running</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
  </widget>
  <resources/>
  <connections/>

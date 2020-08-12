@@ -57,6 +57,7 @@ class GameRunner(Thread):
         self.__players_scores = {}
         self.__players_colors = {}
         self.__players_turn = []
+        self.has_stopped = False
         self.__players_hints = {}
         self.__current_player_turn = None
         self.__generated_colors = []
@@ -359,10 +360,17 @@ class GameRunner(Thread):
                     response.send(self.__players_connections[account_id])
                     self.broadcast_players_status()
             else:
+                if self.has_stopped:
+                    self.__db_manager.set_game_ended(self.__game_id, None)
+                    print("Game deleted")
+                    return                    
                 if self.__online_players == 0 and self.__has_winner:
+                    self.has_stopped = True
+                    print("Game deleted")
                     return
                 if self.__online_players == 0 and (time() - self.__last_activity) > 30:
                     self.__db_manager.set_game_ended(self.__game_id, None)
+                    self.has_stopped = True
                     print("Game deleted")
                     return
                 sleep(0.01)
@@ -615,15 +623,17 @@ class GameServer(Thread):
         self.__sock.listen()
         self.__executor = ThreadPoolExecutor()
         while True:
-            if not self.__is_paused and not self.__is_paused:
+            if not self.__is_paused and not self.__is_stopped:
                 ct = ClientTask(self.__db_manager, self, *self.__sock.accept())
                 self.__executor.submit(ct)
             else:
                 if self.__is_stopped:
                     self.__sock.close()
-                    # shutdown game runners
-                    # self.__executor.shutdown()
-                    # break loop
+                    for game_id in self._game_runners.keys():
+                        self._game_runners[game_id].has_stopped = True
+                    self._game_runners.clear()
+                    self.__executor.shutdown()
+                    break
                 else:
                     sleep(0.2)
 

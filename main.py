@@ -8,6 +8,7 @@ class SOSGameServerApp(QApplication):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.db_model = DatabaseModel()
+        self.db_model.ensure_one_admin_exists()
         self.main_window = MainWindow(self.db_model)
         self.main_window.show()
 
