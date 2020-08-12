@@ -57,13 +57,16 @@ class GameRunner(Thread):
         self.__players_scores = {}
         self.__players_colors = {}
         self.__players_turn = []
+        self.__players_hints = {}
         self.__current_player_turn = None
         self.__generated_colors = []
         self.__online_players = 0
+        self.__occupied_cells_number = 0
         self.__last_activity = time()
+        self.__has_winner = False
         self._tasks_queue = Queue()
         self.get_game_information()
-        self.__game_board = [[None for i in range(self.__board_size)] for j in range(self.__board_size)]
+        self.__game_board = [[[None, ""] for i in range(self.__board_size)] for j in range(self.__board_size)]
         self.generate_colors()
 
     def generate_colors(self):
@@ -78,7 +81,8 @@ class GameRunner(Thread):
         self.__player_count = result[0]
         self.__board_size = result[1]
         self.__who_created = result[2]
-        self.__who_created_username = result[3]        
+        self.__who_created_username = result[3]
+        self.__max_hint = result[4]
 
     def player_listener(self, account_id, sock):
         while True:
@@ -127,7 +131,7 @@ class GameRunner(Thread):
         for i in range(self.__board_size):
             response["data"]["board"].append([])
             for j in range(self.__board_size):
-                if self.__game_board[i][j]:
+                if self.__game_board[i][j][0] != None:
                     response["data"]["board"][i].append([
                             self.__players_colors[self.__game_board[i][j][0]], self.__game_board[i][j][1]
                         ]
@@ -153,6 +157,72 @@ class GameRunner(Thread):
         response["command"] = "game_runner_your_turn"
         response.send(player_connection)
 
+    def broadcast_winner(self):
+        response = Packet()
+        response["command"] = "game_runner_winner_announced"
+        sorted_scores = sorted(list(self.__players_scores.items()), key=lambda player_score : player_score[1], reverse=True)
+        if sorted_scores[0][1] == sorted_scores[1][1]:
+            response["draw"] = True
+            self.__db_manager.set_game_ended(self.__game_id, None)
+        else:
+            response["winner"] = self.__db_manager.get_username_from_account_id(sorted_scores[0][0])
+            self.__db_manager.update_account_games_and_wins(sorted_scores[0][0], 0, 1)
+            self.__db_manager.set_game_ended(self.__game_id, sorted_scores[0][0])
+        for player_account_id, player_connection in self.__players_connections.items():
+            self.__db_manager.update_account_games_and_wins(player_account_id, 1, 0)
+            if player_connection != None:
+                response.send(player_connection)
+        self.__has_winner = True        
+
+    def check_for_sos_triple(self, account_id, row, column, letter):
+        neighbour_cells = [
+            (row - 1, column - 1),
+            (row - 1, column),
+            (row - 1, column + 1),
+            (row, column - 1),
+            (row, column + 1),
+            (row + 1, column - 1),
+            (row + 1, column),
+            (row + 1, column + 1)
+        ]
+        second_layer_neighbor_cells = [
+            (row - 2, column - 2),
+            (row - 2, column),
+            (row - 2, column + 2),
+            (row, column - 2),
+            (row, column + 2),
+            (row + 2, column - 2),
+            (row + 2, column),
+            (row + 2, column + 2)
+        ]
+        found = False
+        counter = 0
+        if letter == "S":
+            for i in range(8):
+                cell = neighbour_cells[i]
+                if 0 <= cell[0] < self.__board_size and 0 <= cell[1] < self.__board_size:
+                    if self.__game_board[cell[0]][cell[1]][1] == "O":
+                        second_layer_cell = second_layer_neighbor_cells[i]
+                        if 0 <= second_layer_cell[0] < self.__board_size and 0 <= second_layer_cell[1] < self.__board_size:
+                            if self.__game_board[second_layer_cell[0]][second_layer_cell[1]][1] == "S":
+                                found = True
+                                counter += 1
+                                self.__game_board[second_layer_cell[0]][second_layer_cell[1]][0] = account_id
+                                self.__game_board[cell[0]][cell[1]][0] = account_id
+        else: # letter == "O"
+            for i in range(4):
+                row1 = neighbour_cells[i][0]
+                row2 = neighbour_cells[7 - i][0]
+                col1 = neighbour_cells[i][1]
+                col2 = neighbour_cells[7 - i][1]
+                if 0 <= row1 < self.__board_size and 0 <= col1 < self.__board_size and 0 <= col2 < self.__board_size and 0 <= row2 < self.__board_size:
+                    if self.__game_board[row1][col1][1] == self.__game_board[row2][col2][1] == "S":
+                        found = True
+                        counter += 1
+                        self.__game_board[row1][col1][0] = account_id
+                        self.__game_board[row2][col2][0] = account_id
+        return found, counter
+
     def run(self):
         while True:
             if not self._tasks_queue.is_empty():
@@ -161,7 +231,14 @@ class GameRunner(Thread):
                     account_id = task["account_id"]
                     sock = task["socket"]
                     client_address = task["client_address"]
-                    if account_id in self.__players_connections and self.__players_connections[account_id] != None:
+                    if self.__has_winner:
+                        response = Packet()
+                        response["command"] = "game_runner_new_player_banned"
+                        response["data"] = {
+                            "error" : "Game has been finished."
+                        } 
+                        response.send(sock)                        
+                    elif account_id in self.__players_connections and self.__players_connections[account_id] != None:
                         response = Packet()
                         response["command"] = "game_runner_new_player_banned"
                         response["data"] = {
@@ -184,7 +261,8 @@ class GameRunner(Thread):
                             "board_size" : self.__board_size,
                             "player_count" : self.__player_count,
                             "creator_username" : self.__who_created_username,
-                            "color" : self.__players_colors[account_id]
+                            "color" : self.__players_colors[account_id],
+                            "max_hint" : self.__max_hint
                         }
                         response.send(sock)
                         self.broadcast_players_status()
@@ -212,16 +290,29 @@ class GameRunner(Thread):
                     row = task["row"]
                     column = task["column"]
                     letter = task["letter"]
-                    self.__game_board[row][column] = [account_id, letter]
-                    self.__db_manager.add_game_log(self.__game_id, account_id, letter, row, column)
-                    self.__current_player_turn += 1
-                    if self.__current_player_turn == len(self.__players_turn):
-                        self.__current_player_turn = 0
-                    self.broadcast_board_status()
-                    self.broadcast_player_turn()
+                    if self.__players_turn[self.__current_player_turn] == account_id:
+                        self.__game_board[row][column] = [account_id, letter]
+                        self.__db_manager.add_game_log(self.__game_id, account_id, letter, row, column)
+                        self.__occupied_cells_number += 1
+                        found, count = self.check_for_sos_triple(account_id, row, column, letter)
+                        if not found:
+                            self.__current_player_turn += 1
+                            if self.__current_player_turn == len(self.__players_turn):
+                                self.__current_player_turn = 0
+                        else:
+                            self.__players_scores[account_id] += count
+                        self.broadcast_players_status()
+                        self.broadcast_board_status()                          
+                        if self.__occupied_cells_number == (self.__board_size * self.__board_size):
+                            self.broadcast_winner()
+                        else:
+                            self.broadcast_player_turn()
             else:
+                if self.__online_players == 0 and self.__has_winner:
+                    return
                 if self.__online_players == 0 and (time() - self.__last_activity) > 30:
-                    self.__db_manager.set_game_ended(self.__game_id)
+                    self.__db_manager.set_game_ended(self.__game_id, None)
+                    print("Game deleted")
                     return
                 sleep(0.01)
 
@@ -402,7 +493,8 @@ class ClientTask:
                 board_size = data["board_size"]
                 player_count = data["player_count"]
                 is_public = data["is_public"]
-                db_result = self.__db_manager.new_game(session_token, board_size, player_count, is_public)
+                max_hint = data["max_hint"]
+                db_result = self.__db_manager.new_game(session_token, board_size, player_count, is_public, max_hint)
                 if not isinstance(db_result, Exception):
                     game_id = db_result[0]
                     account_id = db_result[1]

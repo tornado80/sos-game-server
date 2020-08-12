@@ -72,6 +72,7 @@ class DatabaseManager:
         board_size INTEGER NOT NULL CHECK (player_count > 0),
         is_public INTEGER NOT NULL CHECK (is_public == 1 OR is_public == 0),
         is_running INTEGER NOT NULL DEFAULT 1 CHECK (is_running == 1 OR is_running == 0),
+        max_hint INTEGER NOT NULL,
         when_created TEXT NOT NULL,
         who_created INTEGER NOT NULL,
         FOREIGN KEY (winner) REFERENCES Accounts (account_id),
@@ -87,6 +88,18 @@ class DatabaseManager:
         FOREIGN KEY (game_id) REFERENCES Games (game_id),
         FOREIGN KEY (account_id) REFERENCES Accounts (account_id)        
     );
+    CREATE TABLE IF NOT EXISTS GameHints (
+        gamehint_id INTEGER PRIMARY KEY,
+        hint_number INTEGER NOT NULL CHECK (hint_number > 0),
+        row_number INTEGER NOT NULL CHECK (row_number > 0),
+        column_number INTEGER NOT NULL CHECK (column_number > 0),
+        letter TEXT NOT NULL CHECK (letter == 'S' OR letter == 'O'),
+        game_id INTEGER NOT NULL,
+        account_id INTEGER NOT NULL,
+        hint_datetime TEXT NOT NULL,
+        FOREIGN KEY (game_id) REFERENCES Games (game_id),
+        FOREIGN KEY (account_id) REFERENCES Accounts (account_id)
+    );    
     CREATE TABLE IF NOT EXISTS GameLogs (
         gamelog_id INTEGER PRIMARY KEY,
         log_number INTEGER NOT NULL CHECK (log_number > 0),
@@ -129,7 +142,7 @@ class DatabaseManager:
             self.db_cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
             self.db_connection.commit()
             for tbl in self.db_cursor.fetchall():
-                if tbl[0] not in ["Accounts", "Sessions", "Games", "Players", "GameLogs", "Actions"]:
+                if tbl[0] not in ["Accounts", "Sessions", "Games", "Players", "GameLogs", "Actions", "GameHints"]:
                     return False
             return True
         except sqlite3.Error as err:
@@ -199,16 +212,37 @@ class DatabaseManager:
         dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.db_cursor.execute(
             "INSERT INTO GameLogs (log_number, row_number, column_number, letter, game_id, account_id, log_datetime) VALUES (?, ?, ?, ?, ?, ?, ?);",
-            (new_log_number, row_number, column_number, letter, game_id, account_id, dt_str)
+            (new_log_number, row_number + 1, column_number + 1, letter, game_id, account_id, dt_str)
         )
         self.db_connection.commit()
         return True
 
-    def set_game_ended(self, game_id : int) -> bool:
+    @db_transaction
+    def update_account_games_and_wins(self, account_id : int, games_changes : int, wins_changes : int) -> bool:
         self.db_cursor.execute(
-            "UPDATE Games SET is_running = 0 WHERE (game_id = ?);",
-            (game_id,)
+            "SELECT number_of_games, number_of_wins FROM Accounts WHERE (account_id = ?);",
+            (account_id,)
         )
+        result = self.db_cursor.fetchone()
+        self.db_cursor.execute(
+            "UPDATE Accounts SET number_of_games = ?, number_of_wins = ? WHERE (account_id = ?);",
+            (result[0] + games_changes, result[1] + wins_changes, account_id)
+        )
+        self.db_connection.commit()
+        return True
+
+    @db_transaction
+    def set_game_ended(self, game_id : int, winner) -> bool:
+        if winner:
+            self.db_cursor.execute(
+                "UPDATE Games SET is_running = 0, winner = ? WHERE (game_id = ?);",
+                (winner, game_id)
+            )
+        else:
+            self.db_cursor.execute(
+                "UPDATE Games SET is_running = 0 WHERE (game_id = ?);",
+                (game_id,)
+            )            
         self.db_connection.commit()
         return True
 
@@ -250,7 +284,7 @@ class DatabaseManager:
 
     def get_game_information(self, game_id : int):
         self.db_cursor.execute(
-            "SELECT player_count, board_size, who_created, username FROM Games INNER JOIN Accounts ON who_created = account_id WHERE (game_id = ?);",
+            "SELECT player_count, board_size, who_created, username, max_hint FROM Games INNER JOIN Accounts ON who_created = account_id WHERE (game_id = ?);",
             (game_id,)
         )
         result = self.db_cursor.fetchone()
@@ -260,14 +294,14 @@ class DatabaseManager:
             raise WrongGameIDError("Game ID is not valid.")
 
     @db_transaction
-    def new_game(self, session_token : str, board_size : int, player_count : int, is_public : bool) -> tuple:
+    def new_game(self, session_token : str, board_size : int, player_count : int, is_public : bool, max_hint : int) -> tuple:
         account_id = self.validate_session_token(session_token)
         if account_id == -1:   
             raise InvalidSessionTokenError("Session token is not valid.")
         dt_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         self.db_cursor.execute(
-            "INSERT INTO Games (player_count, is_public, board_size, when_created, who_created) VALUES (?, ?, ?, ?, ?);",
-            (player_count, 1 if is_public else 0, board_size, dt_str, account_id)
+            "INSERT INTO Games (player_count, is_public, board_size, when_created, who_created, max_hint) VALUES (?, ?, ?, ?, ?, ?);",
+            (player_count, 1 if is_public else 0, board_size, dt_str, account_id, max_hint)
         )
         self.db_connection.commit()
         game_id = self.db_cursor.lastrowid
